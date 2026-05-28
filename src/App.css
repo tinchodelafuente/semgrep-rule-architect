@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #4b5563;
+    border-radius: 4px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #6b7280;
+  }
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #111827; /* Tailwind gray-900 */
+}
+
+/* Estilos nativos para los bloques de código de Semgrep en Monaco */
+.semgrep-highlight-red {
+    background-color: rgba(239, 68, 68, 0.3) !important;
+    border-bottom: 2px dashed #ef4444;
+}
+.semgrep-highlight-blue {
+    background-color: rgba(59, 130, 246, 0.3) !important;
+    border-bottom: 2px dashed #3b82f6;
+}
+.semgrep-highlight-green {
+    background-color: rgba(34, 197, 94, 0.3) !important;
+    border-bottom: 2px dashed #22c55e;
+}
+.semgrep-highlight-yellow {
+    background-color: rgba(234, 179, 8, 0.3) !important;
+    border-bottom: 2px dashed #eab308;
+}
+.semgrep-highlight-purple {
+    background-color: rgba(168, 85, 247, 0.3) !important;
+    border-bottom: 2px dashed #a855f7;
+}
+.semgrep-highlight-pink {
+    background-color: rgba(236, 72, 153, 0.3) !important;
+    border-bottom: 2px dashed #ec4899;
+}
+
+/* Cursor de ayuda al pasar por encima del error */
+.monaco-editor .ced-1-0 {
+    cursor: help !important;
+}
