@@ -736,6 +736,7 @@ fn language_id_for_extension(ext: &str) -> &str {
         "js" => "javascript",
         "ts" => "typescript",
         "py" => "python",
+        "cs" => "csharp",
         "rs" => "rust",
         other => other,
     }

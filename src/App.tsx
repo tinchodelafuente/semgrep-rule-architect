@@ -109,6 +109,7 @@ const extensionForLanguage = (language: string) => {
   if (language === "typescript") return "ts";
   if (language === "python") return "py";
   if (language === "java") return "java";
+  if (language === "csharp") return "cs";
   if (language === "go") return "go";
   if (language === "rust") return "rs";
   return "txt";
@@ -445,10 +446,11 @@ function App() {
               onChange={(e) => setLanguage(e.target.value)}
               className="bg-gray-800 text-white text-xs px-3 py-1.5 rounded-md border border-gray-600 outline-none shadow-sm cursor-pointer hover:bg-gray-700 transition-colors"
             >
-              <option value="javascript">JavaScript</option>
-              <option value="typescript">TypeScript</option>
+              <option value="javascript">JavaScript / Node.js</option>
+              <option value="typescript">TypeScript / Node.js</option>
               <option value="python">Python</option>
               <option value="java">Java</option>
+              <option value="csharp">C# / .NET</option>
               <option value="go">Go</option>
               <option value="rust">Rust</option>
             </select>
