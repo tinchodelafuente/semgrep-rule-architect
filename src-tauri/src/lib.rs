@@ -2,6 +2,7 @@ mod lsp;
 
 use serde::Deserialize;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use tauri::{Manager, State};
@@ -21,6 +22,12 @@ struct SemgrepArgs {
     #[serde(rename = "testCode")]
     test_code: String,
     extension: String,
+}
+#[derive(Deserialize)]
+struct ExportRulesArgs {
+    #[serde(rename = "yamlContent")]
+    yaml_content: String,
+    path: String,
 }
 
 #[tauri::command]
@@ -112,6 +119,20 @@ async fn scan_semgrep(args: SemgrepArgs) -> Result<String, String> {
 fn lsp_check(state: State<'_, Arc<lsp::LspManager>>, args: SemgrepArgs) -> Result<(), String> {
     state.check_code(&args.yaml_content, &args.test_code, &args.extension)
 }
+#[tauri::command]
+fn export_rules(args: ExportRulesArgs) -> Result<String, String> {
+    let path = PathBuf::from(args.path);
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            return Err(format!("Export directory does not exist: {}", parent.display()));
+        }
+    }
+
+    std::fs::write(&path, args.yaml_content).map_err(|e| e.to_string())?;
+
+    Ok(path.to_string_lossy().to_string())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -124,10 +145,12 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             run_semgrep,
             scan_semgrep,
-            lsp_check
+            lsp_check,
+            export_rules
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

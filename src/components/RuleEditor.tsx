@@ -6,7 +6,9 @@ import { Plus, Trash2, Download, ChevronDown, ChevronRight, BookOpen } from 'luc
 interface RuleEditorProps {
   yamlContent: string;
   onChange: (value: string) => void;
-  onExport: () => void;
+  onExport: () => void | Promise<void>;
+  exportStatus?: string | null;
+  isExporting?: boolean;
 }
 
 const PATTERN_TYPES = [
@@ -271,7 +273,7 @@ fix: setInterval($FUNC, $TIME)`}
   );
 }
 
-export function RuleEditor({ yamlContent, onChange, onExport }: RuleEditorProps) {
+export function RuleEditor({ yamlContent, onChange, onExport, exportStatus, isExporting = false }: RuleEditorProps) {
   const [mode, setMode] = useState<'basic' | 'advanced' | 'guide'>('basic');
   const [rules, setRules] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -349,13 +351,22 @@ export function RuleEditor({ yamlContent, onChange, onExport }: RuleEditorProps)
             Guide
           </button>
         </div>
-        <button 
-          onClick={onExport}
-          className="flex items-center space-x-2 text-sm bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded transition-colors"
-        >
-          <Download size={16} />
-          <span>Export</span>
-        </button>
+        <div className="flex min-w-0 items-center space-x-3">
+          {exportStatus && (
+            <span className="max-w-72 truncate text-xs text-gray-300" title={exportStatus}>
+              {exportStatus}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onExport}
+            disabled={isExporting}
+            className={`flex items-center space-x-2 text-sm bg-gray-700 text-white px-3 py-1.5 rounded transition-colors ${isExporting ? 'cursor-wait opacity-70' : 'hover:bg-gray-600'}`}
+          >
+            <Download size={16} />
+            <span>{isExporting ? 'Exporting' : 'Export'}</span>
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-hidden">

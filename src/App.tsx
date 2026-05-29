@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { save } from "@tauri-apps/plugin-dialog";
+import yamlParser from "js-yaml";
 import { CodeEditor } from "./components/CodeEditor";
 import { RuleEditor } from "./components/RuleEditor";
 
@@ -46,6 +48,61 @@ const INITIAL_CODE = `function hello() {
   console.log("Hello world!");
 }
 `;
+type SaveFileHandle = {
+  name: string;
+  createWritable: () => Promise<{
+    write: (data: string) => Promise<void>;
+    close: () => Promise<void>;
+  }>;
+};
+
+type FilePickerWindow = Window &
+  typeof globalThis & {
+    showSaveFilePicker?: (options: {
+      suggestedName?: string;
+      types: Array<{
+        description: string;
+        accept: Record<string, string[]>;
+      }>;
+    }) => Promise<SaveFileHandle>;
+  };
+
+const YAML_EXTENSIONS = ["yaml", "yml"];
+
+const sanitizeRuleFileName = (value: string) => {
+  const cleaned = value
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  return cleaned.slice(0, 120);
+};
+
+const getSuggestedExportFileName = (yamlContent: string) => {
+  try {
+    const parsed = yamlParser.load(yamlContent) as any;
+    const rules = Array.isArray(parsed?.rules) ? parsed.rules : [];
+
+    if (rules.length !== 1) {
+      return undefined;
+    }
+
+    const ruleId = rules[0]?.id;
+    const safeRuleId = typeof ruleId === "string" ? sanitizeRuleFileName(ruleId) : "";
+    return `${safeRuleId || "rule"}.yaml`;
+  } catch {
+    return undefined;
+  }
+};
+
+const withYamlExtension = (path: string) =>
+  YAML_EXTENSIONS.some((extension) =>
+    path.toLowerCase().endsWith(`.${extension}`),
+  )
+    ? path
+    : `${path}.yaml`;
 
 const extensionForLanguage = (language: string) => {
   if (language === "javascript") return "js";
@@ -104,7 +161,18 @@ function App() {
   const [fixedCode, setFixedCode] = useState<string | null>(null);
   const [isFixing, setIsFixing] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
   const checkRunRef = useRef(0);
+  const exportStatusTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (exportStatusTimeoutRef.current !== null) {
+        window.clearTimeout(exportStatusTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const unlistenPromise = listen("semgrep-diagnostics", (event) => {
@@ -252,18 +320,97 @@ function App() {
     };
   }, [yaml, code, language]);
 
-  const handleExport = () => {
+  const showExportStatus = (message: string) => {
+    setExportStatus(message);
+
+    if (exportStatusTimeoutRef.current !== null) {
+      window.clearTimeout(exportStatusTimeoutRef.current);
+    }
+
+    exportStatusTimeoutRef.current = window.setTimeout(() => {
+      setExportStatus(null);
+      exportStatusTimeoutRef.current = null;
+    }, 5000);
+  };
+
+  const downloadYamlInBrowser = async (suggestedName?: string) => {
+    const pickerWindow = window as FilePickerWindow;
+
+    if (pickerWindow.showSaveFilePicker) {
+      const fileHandle = await pickerWindow.showSaveFilePicker({
+        suggestedName,
+        types: [
+          {
+            description: "YAML",
+            accept: {
+              "text/yaml": [".yaml", ".yml"],
+              "application/x-yaml": [".yaml", ".yml"],
+            },
+          },
+        ],
+      });
+      const writable = await fileHandle.createWritable();
+      await writable.write(yaml);
+      await writable.close();
+      return fileHandle.name;
+    }
+
+    const downloadName = suggestedName || "rules.yaml";
     const blob = new Blob([yaml], { type: "text/yaml" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "rules.yaml";
+    a.download = downloadName;
+    a.style.display = "none";
     document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+
+    window.setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 1000);
+
+    return downloadName;
   };
 
+  const handleExport = async () => {
+    const suggestedName = getSuggestedExportFileName(yaml);
+    setIsExporting(true);
+
+    try {
+      if (isTauri()) {
+        const selectedPath = await save({
+          title: "Export Semgrep rule",
+          defaultPath: suggestedName,
+          filters: [{ name: "YAML", extensions: YAML_EXTENSIONS }],
+        });
+
+        if (!selectedPath) {
+          showExportStatus("Export canceled");
+          return;
+        }
+
+        const savedPath = await invoke<string>("export_rules", {
+          args: { yamlContent: yaml, path: withYamlExtension(selectedPath) },
+        });
+        showExportStatus(`Exported to ${savedPath}`);
+        return;
+      }
+
+      const savedName = await downloadYamlInBrowser(suggestedName);
+      showExportStatus(`Exported ${savedName}`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        showExportStatus("Export canceled");
+        return;
+      }
+
+      console.error("Export failed:", error);
+      showExportStatus(`Export failed: ${String(error)}`);
+    } finally {
+      setIsExporting(false);
+    }
+  };
   return (
     <div className="h-screen w-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden">
       <header className="h-12 bg-gray-950 border-b border-gray-800 flex items-center px-4 shrink-0 shadow-sm z-20">
@@ -286,6 +433,8 @@ function App() {
             yamlContent={yaml}
             onChange={setYaml}
             onExport={handleExport}
+            exportStatus={exportStatus}
+            isExporting={isExporting}
           />
         </div>
 

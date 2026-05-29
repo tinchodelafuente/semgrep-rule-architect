@@ -8,6 +8,7 @@
     "opener:default",
     "core:event:allow-listen",
     "core:event:allow-emit",
+    "dialog:allow-save",
     {
       "identifier": "shell:allow-execute",
       "allow": [{ "name": "semgrep", "cmd": "semgrep", "args": true }]
