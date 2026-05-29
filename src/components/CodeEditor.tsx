@@ -1,5 +1,5 @@
-import { useRef, useEffect } from 'react';
-import Editor, { DiffEditor, useMonaco } from '@monaco-editor/react';
+import { useEffect, useRef, useState } from 'react';
+import Editor, { useMonaco } from '@monaco-editor/react';
 
 interface CodeEditorProps {
   code: string;
@@ -14,105 +14,111 @@ export function CodeEditor({ code, language, onChange, matches, fixedCode, lspDi
   const monaco = useMonaco();
   const editorRef = useRef<any>(null);
   const decorationsRef = useRef<string[]>([]);
+  const [editorReady, setEditorReady] = useState(false);
 
   function handleEditorDidMount(editor: any) {
     editorRef.current = editor;
+    setEditorReady(true);
   }
 
-  // Generate a distinct color per rule ID
   const getColorForRule = (ruleId: string) => {
     let hash = 0;
     for (let i = 0; i < ruleId.length; i++) {
       hash = ruleId.charCodeAt(i) + ((hash << 5) - hash);
     }
+
     const colors = [
-        'semgrep-highlight-red',
-        'semgrep-highlight-blue',
-        'semgrep-highlight-green',
-        'semgrep-highlight-yellow',
-        'semgrep-highlight-purple',
-        'semgrep-highlight-pink',
-      ];
+      'semgrep-highlight-red',
+      'semgrep-highlight-blue',
+      'semgrep-highlight-green',
+      'semgrep-highlight-yellow',
+      'semgrep-highlight-purple',
+      'semgrep-highlight-pink',
+    ];
+
     return colors[Math.abs(hash) % colors.length];
   };
 
-  useEffect(() => {
-    if (!monaco || !editorRef.current) return;
+  const getDiagnosticCode = (match: any) => {
+    if (typeof match.code === 'string' || typeof match.code === 'number') {
+      return String(match.code);
+    }
 
-    // Use LSP diagnostics for instant highlight if available, else fallback to matches
+    if (match.code?.value) {
+      return String(match.code.value);
+    }
+
+    return 'unknown-rule';
+  };
+
+  useEffect(() => {
+    if (!monaco || !editorRef.current || !editorReady) return;
+
     const items = lspDiagnostics.length > 0 ? lspDiagnostics : matches;
 
-    const newDecorations = items.map((match: any) => {
-      // Handle both Semgrep JSON output format and LSP Diagnostic format
-      let startLine, startCol, endLine, endCol, message, checkId;
-      
+    const newDecorations = items.flatMap((match: any) => {
+      let startLine: number;
+      let startCol: number;
+      let endLine: number;
+      let endCol: number;
+      let message: string | undefined;
+      let checkId: string;
+
       if (match.range) {
-        // LSP Format
         startLine = match.range.start.line + 1;
         startCol = match.range.start.character + 1;
         endLine = match.range.end.line + 1;
         endCol = match.range.end.character + 1;
         message = match.message;
-        checkId = match.code || "unknown-rule";
-      } else {
-        // Semgrep CLI JSON Format
+        checkId = getDiagnosticCode(match);
+      } else if (match.start && match.end) {
         startLine = match.start.line;
         startCol = match.start.col;
         endLine = match.end.line;
         endCol = match.end.col;
         message = match.extra?.message;
-        checkId = match.check_id;
+        checkId = match.check_id || 'unknown-rule';
+      } else {
+        return [];
+      }
+
+      if (!startLine || !startCol || !endLine || !endCol) {
+        return [];
+      }
+
+      if (startLine === endLine && endCol <= startCol) {
+        endCol = startCol + 1;
       }
 
       const colorClass = getColorForRule(checkId);
 
-      return {
+      return [{
         range: new monaco.Range(startLine, startCol, endLine, endCol),
         options: {
           isWholeLine: false,
           className: colorClass,
-          hoverMessage: { value: `**${checkId}**\n\n${message}` }
-        }
-      };
+          inlineClassName: colorClass,
+          hoverMessage: { value: `**${checkId}**\n\n${message || ''}` },
+        },
+      }];
     });
 
-    const currentEditor = editorRef.current;
-    if (currentEditor) {
-      let targetEditor: any = null;
+    decorationsRef.current = editorRef.current.deltaDecorations(
+      decorationsRef.current,
+      newDecorations
+    );
+  }, [matches, lspDiagnostics, monaco, editorReady, code]);
 
-      // Si es un DiffEditor, tiene ambos métodos. 
-      // Elegimos getOriginalEditor() para pintar el error sobre el código viejo (izq).
-      if (currentEditor.getOriginalEditor && currentEditor.getModifiedEditor) {
-        targetEditor = currentEditor.getOriginalEditor();
-      } else {
-        // Si es el editor común de edición
-        targetEditor = currentEditor;
-      }
-      
-      if (targetEditor && typeof targetEditor.deltaDecorations === 'function') {
-          decorationsRef.current = targetEditor.deltaDecorations(
-            decorationsRef.current,
-            newDecorations
-          );
-      }
-    }
-  }, [matches, lspDiagnostics, monaco]);
-
-  const hasFix = fixedCode && fixedCode !== code;
-
-return (
+  return (
     <div className="h-full w-full flex flex-col">
       <div className="bg-gray-900 text-white p-2 text-sm font-semibold border-b border-gray-700 flex justify-between items-center">
         <span>
-          Test Code 
+          Test Code
           {fixedCode && <span className="ml-2 text-xs bg-green-600/30 text-green-400 px-2 py-0.5 rounded border border-green-600/50">Fix Disponible abajo</span>}
         </span>
       </div>
-      
-      {/* Contenedor principal dividido en dos de forma fija si hay un fix, o pantalla completa si no */}
+
       <div className="flex-1 flex flex-col md:flex-row relative h-full">
-        
-        {/* PANEL 1: El editor de código activo. NUNCA se desmonta, por ende las decoraciones no se rompen */}
         <div className={`h-full relative ${fixedCode ? 'w-full md:w-1/2 border-r border-gray-700' : 'w-full'}`}>
           <Editor
             height="100%"
@@ -124,16 +130,15 @@ return (
             options={{
               minimap: { enabled: false },
               fontSize: 14,
-              padding: { top: 16 }
+              padding: { top: 16 },
             }}
           />
         </div>
 
-        {/* PANEL 2: Si hay un fix generado por Semgrep, mostramos el visor estático al lado para comparar */}
         {fixedCode && (
           <div className="h-full w-full md:w-1/2 bg-gray-950">
             <div className="bg-gray-950 text-gray-400 p-1 text-xs border-b border-gray-800 px-3">
-              Previsualización de Corrección Automática
+              Previsualizacion de Correccion Automatica
             </div>
             <Editor
               height="calc(100% - 24px)"
@@ -144,12 +149,11 @@ return (
                 minimap: { enabled: false },
                 fontSize: 14,
                 padding: { top: 16 },
-                readOnly: true // Este panel es solo para mirar
+                readOnly: true,
               }}
             />
           </div>
         )}
-
       </div>
     </div>
   );

@@ -18,6 +18,80 @@ const PATTERN_TYPES = [
   'pattern-regex'
 ];
 
+const PATTERN_OUTPUT_ORDER = [
+  'pattern-inside',
+  'pattern-not-inside',
+  'pattern-not',
+  'pattern',
+  'pattern-either',
+  'pattern-regex',
+];
+
+const DEFAULT_CONDITION_VALUES: Record<string, any> = {
+  pattern: '...',
+  'pattern-either': [{ pattern: '...' }],
+  'pattern-not': '...',
+  'pattern-inside': `function $FUNC(...) {
+  ...
+}`,
+  'pattern-not-inside': '...',
+  'pattern-regex': '...',
+};
+
+const isEmptyConditionValue = (value: any) => {
+  if (value === undefined || value === null) return true;
+  if (typeof value === 'string') return value.trim() === '';
+  if (Array.isArray(value)) return value.length === 0;
+  return false;
+};
+
+const normalizeRuleForBasicMode = (rule: any) => {
+  const normalized = { ...rule };
+
+  if (Array.isArray(rule.patterns)) {
+    for (const condition of rule.patterns) {
+      if (!condition || typeof condition !== 'object' || Array.isArray(condition)) {
+        continue;
+      }
+
+      for (const patternType of PATTERN_TYPES) {
+        if (condition[patternType] !== undefined && normalized[patternType] === undefined) {
+          normalized[patternType] = condition[patternType];
+        }
+      }
+    }
+
+    delete normalized.patterns;
+  }
+
+  return normalized;
+};
+
+const prepareRuleForYaml = (rule: any) => {
+  const output: any = {};
+
+  for (const [key, value] of Object.entries(rule)) {
+    if (PATTERN_TYPES.includes(key)) continue;
+
+    if (value !== undefined) {
+      output[key] = value;
+    }
+  }
+
+  const conditions = PATTERN_OUTPUT_ORDER
+    .filter((field) => !isEmptyConditionValue(rule[field]))
+    .map((field) => ({ field, value: rule[field] }));
+
+  if (conditions.length === 1) {
+    const condition = conditions[0];
+    output[condition.field] = condition.value;
+  } else if (conditions.length > 1) {
+    output.patterns = conditions.map(({ field, value }) => ({ [field]: value }));
+  }
+
+  return output;
+};
+
 function RuleCard({ rule, index, onChange, onDelete }: any) {
   const [expanded, setExpanded] = useState(true);
 
@@ -42,7 +116,7 @@ function RuleCard({ rule, index, onChange, onDelete }: any) {
     };
 
     return (
-      <div className="mb-3 relative group">
+      <div key={field} className="mb-3 relative group">
         <label className="block text-xs font-medium text-gray-400 mb-1 capitalize">{label}</label>
         <div className="flex">
           {isTextarea ? (
@@ -116,7 +190,7 @@ function RuleCard({ rule, index, onChange, onDelete }: any) {
                   className="bg-gray-700 text-xs text-white p-1 rounded border border-gray-600"
                   onChange={(e) => {
                      if (e.target.value) {
-                        onChange(e.target.value, e.target.value === 'pattern-either' ? [{pattern: '...'}] : '...');
+                        onChange(e.target.value, DEFAULT_CONDITION_VALUES[e.target.value] ?? '...');
                         e.target.value = "";
                      }
                   }}
@@ -207,7 +281,7 @@ export function RuleEditor({ yamlContent, onChange, onExport }: RuleEditorProps)
       try {
         const parsed = yaml.load(yamlContent) as any;
         if (parsed && parsed.rules && Array.isArray(parsed.rules)) {
-          setRules(parsed.rules);
+          setRules(parsed.rules.map(normalizeRuleForBasicMode));
         } else {
           setRules([]);
         }
@@ -222,7 +296,8 @@ export function RuleEditor({ yamlContent, onChange, onExport }: RuleEditorProps)
     try {
       // Remove undefined fields
       const cleaned = JSON.parse(JSON.stringify(newRules));
-      const newYaml = yaml.dump({ rules: cleaned }, { noRefs: true });
+      const rulesForYaml = cleaned.map(prepareRuleForYaml);
+      const newYaml = yaml.dump({ rules: rulesForYaml }, { noRefs: true });
       onChange(newYaml);
       setRules(cleaned);
     } catch (e) {
@@ -293,7 +368,7 @@ export function RuleEditor({ yamlContent, onChange, onExport }: RuleEditorProps)
             )}
             {!error && rules.map((rule, idx) => (
               <RuleCard 
-                key={idx} 
+                key={rule.id || idx}
                 rule={rule} 
                 index={idx} 
                 onChange={(field: string, val: any) => handleRuleChange(idx, field, val)}
