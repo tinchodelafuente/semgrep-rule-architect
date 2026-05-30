@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
 import yaml from 'js-yaml';
-import { Plus, Trash2, Download, ChevronDown, ChevronRight, BookOpen } from 'lucide-react';
+import { Plus, Trash2, Download, ChevronDown, ChevronRight, BookOpen, Wand2, ArrowLeft, ArrowRight, X } from 'lucide-react';
 
 interface RuleEditorProps {
   yamlContent: string;
@@ -9,6 +9,9 @@ interface RuleEditorProps {
   onExport: () => void | Promise<void>;
   exportStatus?: string | null;
   isExporting?: boolean;
+  testCode?: string;
+  testLanguage?: string;
+  onTestCodeChange?: (value: string) => void;
 }
 
 const PATTERN_TYPES = [
@@ -38,6 +41,98 @@ const DEFAULT_CONDITION_VALUES: Record<string, any> = {
 }`,
   'pattern-not-inside': '...',
   'pattern-regex': '...',
+};
+
+type RegexPiece = {
+  label: string;
+  value: string;
+  description: string;
+};
+
+type RegexPieceGroup = {
+  name: string;
+  pieces: RegexPiece[];
+};
+
+type RegexToken = RegexPiece & {
+  id: string;
+};
+
+const REGEX_PIECE_GROUPS: RegexPieceGroup[] = [
+  {
+    name: 'Anchors',
+    pieces: [
+      { label: 'Line start', value: '^', description: 'Matches the start of a line.' },
+      { label: 'Line end', value: '$', description: 'Matches the end of a line.' },
+      { label: 'Word edge', value: '\\b', description: 'Matches the edge of a word.' },
+    ],
+  },
+  {
+    name: 'Characters',
+    pieces: [
+      { label: 'Any char', value: '.', description: 'Matches any single character except a newline.' },
+      { label: 'Digit', value: '\\d', description: 'Matches one digit from 0 to 9.' },
+      { label: 'Word char', value: '\\w', description: 'Matches letters, digits, or underscore.' },
+      { label: 'Space', value: '\\s', description: 'Matches whitespace.' },
+    ],
+  },
+  {
+    name: 'Sets',
+    pieces: [
+      { label: 'A-Z', value: '[A-Z]', description: 'Matches one uppercase ASCII letter.' },
+      { label: 'a-z', value: '[a-z]', description: 'Matches one lowercase ASCII letter.' },
+      { label: '0-9', value: '[0-9]', description: 'Matches one digit.' },
+      { label: 'A-Z a-z 0-9', value: '[A-Za-z0-9]', description: 'Matches one ASCII letter or digit.' },
+      { label: 'Slug char', value: '[A-Za-z0-9_-]', description: 'Matches one letter, digit, underscore, or dash.' },
+    ],
+  },
+  {
+    name: 'Repeat',
+    pieces: [
+      { label: 'Optional', value: '?', description: 'Repeats the previous item zero or one time.' },
+      { label: '0+', value: '*', description: 'Repeats the previous item zero or more times.' },
+      { label: '1+', value: '+', description: 'Repeats the previous item one or more times.' },
+      { label: '0 to 6', value: '{0,6}', description: 'Repeats the previous item from zero to six times.' },
+    ],
+  },
+  {
+    name: 'Logic',
+    pieces: [
+      { label: 'Or', value: '|', description: 'Matches the item on the left or the item on the right.' },
+      { label: 'Open group', value: '(?:', description: 'Starts a non-capturing group.' },
+      { label: 'Capture $MATCH', value: '(?P<MATCH>', description: 'Starts a Semgrep named capture group called $MATCH.' },
+      { label: 'Close group', value: ')', description: 'Closes the current group.' },
+    ],
+  },
+];
+
+const makeRegexToken = (piece: RegexPiece): RegexToken => ({
+  ...piece,
+  id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+});
+
+const escapeRegexLiteral = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const makePreviewRegex = (value: string) =>
+  new RegExp(value.replace(/\(\?P<([A-Za-z_][A-Za-z0-9_]*)>/g, '(?<$1>'), 'gm');
+
+const getRegexPreviewMatches = (regexValue: string, testCode: string) => {
+  if (!regexValue || !testCode) return [];
+
+  const regex = makePreviewRegex(regexValue);
+  const matches: Array<{ value: string; index: number }> = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(testCode)) && matches.length < 20) {
+    matches.push({ value: match[0], index: match.index });
+
+    if (match[0] === '') {
+      regex.lastIndex += 1;
+    }
+  }
+
+  return matches;
 };
 
 const isEmptyConditionValue = (value: any) => {
@@ -94,8 +189,259 @@ const prepareRuleForYaml = (rule: any) => {
   return output;
 };
 
-function RuleCard({ rule, index, onChange, onDelete }: any) {
+function RegexBuilder({
+  value,
+  testCode,
+  testLanguage,
+  onTestCodeChange,
+  onApply,
+  onClose,
+}: {
+  value: string;
+  testCode: string;
+  testLanguage: string;
+  onTestCodeChange: (value: string) => void;
+  onApply: (value: string) => void;
+  onClose: () => void;
+}) {
+  const [tokens, setTokens] = useState<RegexToken[]>(() =>
+    value ? [makeRegexToken({ label: 'Custom regex', value, description: 'Existing regex expression.' })] : [],
+  );
+  const [literal, setLiteral] = useState('');
+  const regexValue = tokens.map((token) => token.value).join('');
+
+  let previewMatches: Array<{ value: string; index: number }> = [];
+  let previewError: string | null = null;
+
+  try {
+    previewMatches = getRegexPreviewMatches(regexValue, testCode);
+  } catch (error: any) {
+    previewError = error?.message || 'Invalid regex';
+  }
+
+  const addPiece = (piece: RegexPiece) => {
+    setTokens((current) => [...current, makeRegexToken(piece)]);
+  };
+
+  const moveToken = (index: number, direction: -1 | 1) => {
+    setTokens((current) => {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= current.length) return current;
+
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+  };
+
+  const removeToken = (index: number) => {
+    setTokens((current) => current.filter((_, currentIndex) => currentIndex !== index));
+  };
+
+  const addLiteral = () => {
+    if (!literal) return;
+
+    addPiece({
+      label: literal,
+      value: escapeRegexLiteral(literal),
+      description: 'Literal text escaped for regex.',
+    });
+    setLiteral('');
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-md border border-gray-700 bg-gray-900 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-gray-700 px-4 py-3">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Regex Builder</h3>
+            <p className="text-xs text-gray-400">Build a pattern-regex from small pieces and test it against your code.</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-white" title="Close">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="max-h-[calc(92vh-120px)] overflow-y-auto">
+          <div className="grid grid-cols-1 gap-0 md:grid-cols-2">
+          <div className="space-y-4 p-4">
+            <div>
+              <label className="mb-2 block text-xs font-medium text-gray-400">Pieces</label>
+              <div className="flex min-h-12 flex-wrap gap-2 rounded border border-gray-700 bg-gray-950 p-2">
+                {tokens.length === 0 && (
+                  <span className="px-2 py-1 text-xs text-gray-500">Choose pieces below</span>
+                )}
+                {tokens.map((token, index) => (
+                  <div
+                    key={token.id}
+                    className="flex items-center rounded border border-blue-500/40 bg-blue-600/20 text-xs text-blue-100"
+                    title={`${token.value} - ${token.description}`}
+                  >
+                    <span className="border-r border-blue-500/30 px-2 py-1 font-mono">{token.label}</span>
+                    <button
+                      type="button"
+                      onClick={() => moveToken(index, -1)}
+                      className="px-1 py-1 text-blue-200 hover:text-white disabled:opacity-30"
+                      disabled={index === 0}
+                      title="Move left"
+                    >
+                      <ArrowLeft size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveToken(index, 1)}
+                      className="px-1 py-1 text-blue-200 hover:text-white disabled:opacity-30"
+                      disabled={index === tokens.length - 1}
+                      title="Move right"
+                    >
+                      <ArrowRight size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeToken(index)}
+                      className="px-1.5 py-1 text-blue-200 hover:text-red-200"
+                      title="Remove"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-xs font-medium text-gray-400">Regex</label>
+              <textarea
+                value={regexValue}
+                onChange={(event) =>
+                  setTokens(
+                    event.target.value
+                      ? [
+                          makeRegexToken({
+                            label: 'Custom regex',
+                            value: event.target.value,
+                            description: 'Custom regex expression.',
+                          }),
+                        ]
+                      : [],
+                  )
+                }
+                className="h-20 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-sm text-white focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="mb-2 block text-xs font-medium text-gray-400">Literal</label>
+              <div className="flex gap-2">
+                <input
+                  value={literal}
+                  onChange={(event) => setLiteral(event.target.value)}
+                  className="min-w-0 flex-1 rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={addLiteral}
+                  className="rounded bg-gray-700 px-3 py-2 text-sm text-white hover:bg-gray-600"
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {REGEX_PIECE_GROUPS.map((group) => (
+                <div key={group.name}>
+                  <h4 className="mb-2 text-xs font-semibold uppercase text-gray-500">{group.name}</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {group.pieces.map((piece) => (
+                      <button
+                        key={`${group.name}-${piece.value}-${piece.label}`}
+                        type="button"
+                        onClick={() => addPiece(piece)}
+                        className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-200 hover:border-blue-500 hover:bg-gray-700"
+                        title={`${piece.value} - ${piece.description}`}
+                      >
+                        <span className="font-mono">{piece.value}</span>
+                        <span className="ml-1 text-gray-400">{piece.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="min-h-[420px] border-t border-gray-700 bg-gray-950 md:border-l md:border-t-0">
+            <div className="border-b border-gray-800 px-4 py-3">
+              <h4 className="text-xs font-semibold uppercase text-gray-500">Test Code</h4>
+            </div>
+            <Editor
+              height="380px"
+              language={testLanguage}
+              theme="vs-dark"
+              value={testCode}
+              onChange={(nextValue) => onTestCodeChange(nextValue || '')}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 13,
+                padding: { top: 12 },
+                wordWrap: 'on',
+              }}
+            />
+          </div>
+          </div>
+
+          <div className="border-t border-gray-700 bg-gray-950 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h4 className="text-xs font-semibold uppercase text-gray-500">Matches</h4>
+              {!previewError && <span className="text-xs text-gray-400">{previewMatches.length} matches</span>}
+            </div>
+            {previewError ? (
+              <div className="rounded border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-200">
+                {previewError}
+              </div>
+            ) : (
+              <div className="grid max-h-48 grid-cols-1 gap-2 overflow-y-auto md:grid-cols-2 lg:grid-cols-3">
+                {previewMatches.map((match, index) => (
+                  <div key={`${match.index}-${index}`} className="rounded border border-gray-800 bg-gray-900 p-2">
+                    <div className="mb-1 text-[10px] uppercase text-gray-500">Index {match.index}</div>
+                    <code className="break-all text-xs text-green-300">{match.value || '(empty match)'}</code>
+                  </div>
+                ))}
+                {regexValue && previewMatches.length === 0 && (
+                  <div className="text-xs text-gray-500">No matches in test code.</div>
+                )}
+                {!regexValue && (
+                  <div className="text-xs text-gray-500">No regex yet.</div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-gray-700 px-4 py-3">
+          <button type="button" onClick={onClose} className="rounded px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onApply(regexValue);
+              onClose();
+            }}
+            className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-500"
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RuleCard({ rule, index, onChange, onDelete, testCode, testLanguage, onTestCodeChange }: any) {
   const [expanded, setExpanded] = useState(true);
+  const [isRegexBuilderOpen, setIsRegexBuilderOpen] = useState(false);
 
   // Helper to ensure pattern-either is handled as array of objects in UI
   // For simplicity, we just represent the raw YAML values as text area
@@ -135,8 +481,18 @@ function RuleCard({ rule, index, onChange, onDelete }: any) {
               className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
             />
           )}
+          {field === 'pattern-regex' && (
+            <button
+              type="button"
+              onClick={() => setIsRegexBuilderOpen(true)}
+              className="ml-2 text-gray-500 hover:text-blue-400"
+              title="Build regex"
+            >
+              <Wand2 size={16} />
+            </button>
+          )}
           {field.startsWith('pattern') || field === 'fix' || field === 'metadata' ? (
-             <button onClick={() => onChange(field, undefined)} className="ml-2 text-gray-500 hover:text-red-400" title="Remove field">
+             <button type="button" onClick={() => onChange(field, undefined)} className="ml-2 text-gray-500 hover:text-red-400" title="Remove field">
                <Trash2 size={16}/>
              </button>
           ) : null}
@@ -238,6 +594,16 @@ function RuleCard({ rule, index, onChange, onDelete }: any) {
           </div>
         </div>
       )}
+      {isRegexBuilderOpen && (
+        <RegexBuilder
+          value={typeof rule['pattern-regex'] === 'string' ? rule['pattern-regex'] : ''}
+          testCode={testCode || ''}
+          testLanguage={testLanguage || 'javascript'}
+          onTestCodeChange={onTestCodeChange || (() => {})}
+          onApply={(regexValue) => onChange('pattern-regex', regexValue)}
+          onClose={() => setIsRegexBuilderOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -273,7 +639,16 @@ fix: setInterval($FUNC, $TIME)`}
   );
 }
 
-export function RuleEditor({ yamlContent, onChange, onExport, exportStatus, isExporting = false }: RuleEditorProps) {
+export function RuleEditor({
+  yamlContent,
+  onChange,
+  onExport,
+  exportStatus,
+  isExporting = false,
+  testCode = '',
+  testLanguage = 'javascript',
+  onTestCodeChange = () => {},
+}: RuleEditorProps) {
   const [mode, setMode] = useState<'basic' | 'advanced' | 'guide'>('basic');
   const [rules, setRules] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -382,6 +757,9 @@ export function RuleEditor({ yamlContent, onChange, onExport, exportStatus, isEx
                 key={rule.id || idx}
                 rule={rule} 
                 index={idx} 
+                testCode={testCode}
+                testLanguage={testLanguage}
+                onTestCodeChange={onTestCodeChange}
                 onChange={(field: string, val: any) => handleRuleChange(idx, field, val)}
                 onDelete={() => {
                   const newRules = rules.filter((_, i) => i !== idx);

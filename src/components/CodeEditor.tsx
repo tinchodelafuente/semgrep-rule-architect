@@ -51,10 +51,45 @@ export function CodeEditor({ code, language, onChange, matches, fixedCode, lspDi
     return 'unknown-rule';
   };
 
+  const getMatchKey = (match: any) => {
+    if (match.range) {
+      return [
+        match.range.start.line + 1,
+        match.range.start.character + 1,
+        match.range.end.line + 1,
+        match.range.end.character + 1,
+        getDiagnosticCode(match),
+      ].join(':');
+    }
+
+    if (match.start && match.end) {
+      return [
+        match.start.line,
+        match.start.col,
+        match.end.line,
+        match.end.col,
+        match.check_id || 'unknown-rule',
+      ].join(':');
+    }
+
+    return JSON.stringify(match);
+  };
+
+  const mergeMatches = (lspItems: any[], cliItems: any[]) => {
+    const seen = new Set<string>();
+    return [...lspItems, ...cliItems].filter((item) => {
+      const key = getMatchKey(item);
+      if (seen.has(key)) return false;
+
+      seen.add(key);
+      return true;
+    });
+  };
+
   useEffect(() => {
     if (!monaco || !editorRef.current || !editorReady) return;
 
-    const items = lspDiagnostics.length > 0 ? lspDiagnostics : matches;
+    const items = mergeMatches(lspDiagnostics, matches);
 
     const newDecorations = items.flatMap((match: any) => {
       let startLine: number;

@@ -436,6 +436,9 @@ function App() {
             onExport={handleExport}
             exportStatus={exportStatus}
             isExporting={isExporting}
+            testCode={code}
+            testLanguage={language}
+            onTestCodeChange={setCode}
           />
         </div>
 
